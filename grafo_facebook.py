@@ -18,6 +18,8 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+import networkx as nx
+
 
 def lines(path: Path):
     opener = gzip.open if path.suffix == ".gz" else open
@@ -49,27 +51,22 @@ def date_utc(stamp: int | None) -> str | None:
 
 
 def load_friendships(path: Path):
-    adjacency: dict[int, set[int]] = {}
-    rows = edges = loops = timestamps = 0
+    # NetworkX lee el .gz, toma las dos primeras columnas y reúne duplicados.
+    graph = nx.read_edgelist(path, delimiter="\t", nodetype=int, data=False)
+    rows = loops = timestamps = 0
     first_time = last_time = None
     for owner, friend, stamp in lines(path):
         rows += 1
-        adjacency.setdefault(owner, set())
-        adjacency.setdefault(friend, set())
         if owner == friend:
             loops += 1
-            continue
-        if friend not in adjacency[owner]:
-            adjacency[owner].add(friend)
-            adjacency[friend].add(owner)
-            edges += 1
         if stamp is not None:
             timestamps += 1
             first_time = stamp if first_time is None else min(first_time, stamp)
             last_time = stamp if last_time is None else max(last_time, stamp)
-    return adjacency, {
+    graph.remove_edges_from(nx.selfloop_edges(graph))
+    return graph, {
         "filas_amistad_dirigidas": rows,
-        "aristas_amistad_no_dirigidas_unicas": edges,
+        "aristas_amistad_no_dirigidas_unicas": graph.number_of_edges(),
         "filas_lazo": loops,
         "filas_con_fecha_amistad": timestamps,
         "primera_amistad_utc": date_utc(first_time),
@@ -103,8 +100,8 @@ def load_wall_posts(path: Path):
     }, owners | authors
 
 
-def components(adjacency: dict[int, set[int]]):
-    unseen = set(adjacency)
+def components(graph: nx.Graph):
+    unseen = set(graph)
     sizes = []
     while unseen:
         start = min(unseen)
@@ -114,7 +111,7 @@ def components(adjacency: dict[int, set[int]]):
         while queue:
             current = queue.popleft()
             size += 1
-            for neighbor in adjacency[current]:
+            for neighbor in graph[current]:
                 if neighbor in unseen:
                     unseen.remove(neighbor)
                     queue.append(neighbor)
@@ -122,8 +119,8 @@ def components(adjacency: dict[int, set[int]]):
     return sorted(sizes, reverse=True)
 
 
-def reach_by_hops(adjacency: dict[int, set[int]], seed: int, max_hops: int = 3):
-    if seed not in adjacency:
+def reach_by_hops(graph: nx.Graph, seed: int, max_hops: int = 3):
+    if seed not in graph:
         raise ValueError(f"El usuario {seed} no aparece en las amistades")
     seen = {seed}
     frontier = {seed}
@@ -131,49 +128,41 @@ def reach_by_hops(adjacency: dict[int, set[int]], seed: int, max_hops: int = 3):
     for hop in range(1, max_hops + 1):
         following = set()
         for user in frontier:
-            following.update(adjacency[user] - seen)
+            following.update(set(graph[user]) - seen)
         seen.update(following)
         rounds.append({"saltos": hop, "nuevos": len(following), "acumulados_sin_semilla": len(seen) - 1})
         frontier = following
     return rounds
 
 
-def draw_subgraph(adjacency: dict[int, set[int]], authors: set[int], seed: int, output: Path, limit: int):
+def draw_subgraph(graph: nx.Graph, authors: set[int], seed: int, output: Path, limit: int):
     # La figura es un subgrafo inducido, no una muestra que sustituya la red completa.
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import networkx as nx
-
-    neighbors = sorted(adjacency[seed], key=lambda user: (-len(adjacency[user]), user))[: limit - 1]
+    neighbors = sorted(graph[seed], key=lambda user: (-graph.degree(user), user))[: limit - 1]
     selected = [seed, *neighbors]
-    selected_set = set(selected)
-    graph = nx.Graph()
-    graph.add_nodes_from(selected)
-    for user in selected:
-        for friend in adjacency[user] & selected_set:
-            if user < friend:
-                graph.add_edge(user, friend)
-    positions = nx.spring_layout(graph, seed=7, iterations=120)
-    colors = ["#C62828" if user == seed else "#2679A8" if user in authors else "#AAB8C2" for user in graph]
-    sizes = [260 if user == seed else 55 + min(len(adjacency[user]), 400) * 0.32 for user in graph]
+    subgraph = graph.subgraph(selected).copy()
+    positions = nx.spring_layout(subgraph, seed=7, iterations=120)
+    colors = ["#C62828" if user == seed else "#2679A8" if user in authors else "#AAB8C2" for user in subgraph]
+    sizes = [260 if user == seed else 55 + min(graph.degree(user), 400) * 0.32 for user in subgraph]
     fig, ax = plt.subplots(figsize=(9, 5.3), dpi=170)
     fig.patch.set_facecolor("white")
-    nx.draw_networkx_edges(graph, positions, ax=ax, width=0.65, edge_color="#B8C2CC", alpha=0.60)
-    nx.draw_networkx_nodes(graph, positions, ax=ax, node_color=colors, node_size=sizes, linewidths=0.5, edgecolors="white")
+    nx.draw_networkx_edges(subgraph, positions, ax=ax, width=0.65, edge_color="#B8C2CC", alpha=0.60)
+    nx.draw_networkx_nodes(subgraph, positions, ax=ax, node_color=colors, node_size=sizes, linewidths=0.5, edgecolors="white")
     labels = {user: str(user) for user in selected[:7]}
-    nx.draw_networkx_labels(graph, positions, labels, ax=ax, font_size=7, font_color="#1C2730")
-    ax.set_title(f"Subgrafo de amistades de Facebook: {graph.number_of_nodes()} usuarios y {graph.number_of_edges()} relaciones", fontsize=11)
+    nx.draw_networkx_labels(subgraph, positions, labels, ax=ax, font_size=7, font_color="#1C2730")
+    ax.set_title(f"Subgrafo de amistades de Facebook: {subgraph.number_of_nodes()} usuarios y {subgraph.number_of_edges()} relaciones", fontsize=11)
     ax.text(0.5, -0.03, "Rojo: usuario de referencia  ·  Azul: autor de publicaciones en muros  ·  Gris: sin autoría registrada", transform=ax.transAxes, ha="center", fontsize=7)
     ax.axis("off")
     fig.tight_layout()
     fig.savefig(output, bbox_inches="tight")
     plt.close(fig)
-    return {"nodos": graph.number_of_nodes(), "aristas": graph.number_of_edges(), "semilla": seed, "criterio": f"semilla y {len(neighbors)} vecinos con mayor grado"}
+    return {"nodos": subgraph.number_of_nodes(), "aristas": subgraph.number_of_edges(), "semilla": seed, "criterio": f"semilla y {len(neighbors)} vecinos con mayor grado"}
 
 
-def draw_full_graph(adjacency: dict[int, set[int]], output: Path):
+def draw_full_graph(graph: nx.Graph, output: Path):
     """Dibuja cada nodo y cada amistad con Graphviz sfdp (sin muestreo)."""
     import matplotlib
 
@@ -191,10 +180,10 @@ def draw_full_graph(adjacency: dict[int, set[int]], output: Path):
         stream.write('graph Facebook {\n  graph [layout=sfdp, overlap=true, outputorder=edgesfirst, bgcolor="white", dpi=160, size="12,8!", margin=0.02, start=7];\n')
         stream.write('  node [shape=point, width=0.012, label="", color="#1376A9D8"];\n')
         stream.write('  edge [color="#31536D0A", penwidth=0.12];\n')
-        for user in sorted(adjacency):
+        for user in sorted(graph):
             stream.write(f"  {user};\n")
-        for user in sorted(adjacency):
-            for friend in sorted(adjacency[user]):
+        for user in sorted(graph):
+            for friend in sorted(graph[user]):
                 if user < friend:
                     stream.write(f"  {user} -- {friend};\n")
                     edges += 1
@@ -211,12 +200,12 @@ def draw_full_graph(adjacency: dict[int, set[int]], output: Path):
                     positions[int(parts[1])] = (float(parts[2]), float(parts[3]))
     finally:
         plain.unlink(missing_ok=True)
-    if len(positions) != len(adjacency):
-        raise RuntimeError(f"sfdp devolvió {len(positions)} posiciones para {len(adjacency)} nodos")
+    if len(positions) != len(graph):
+        raise RuntimeError(f"sfdp devolvió {len(positions)} posiciones para {len(graph)} nodos")
 
     # La componente principal ocupa casi toda la figura. Las demás se ordenan
     # en dos filas, manteniendo todos sus nodos y relaciones dentro del dibujo.
-    unseen = set(adjacency)
+    unseen = set(graph)
     groups = []
     while unseen:
         start = min(unseen)
@@ -226,7 +215,7 @@ def draw_full_graph(adjacency: dict[int, set[int]], output: Path):
         while queue:
             user = queue.popleft()
             group.append(user)
-            for friend in adjacency[user]:
+            for friend in graph[user]:
                 if friend in unseen:
                     unseen.remove(friend)
                     queue.append(friend)
@@ -252,8 +241,8 @@ def draw_full_graph(adjacency: dict[int, set[int]], output: Path):
 
     segments = np.empty((edges, 2, 2), dtype=np.float32)
     index = 0
-    for user in sorted(adjacency):
-        for friend in sorted(adjacency[user]):
+    for user in sorted(graph):
+        for friend in sorted(graph[user]):
             if user < friend:
                 segments[index, 0] = mapped[user]
                 segments[index, 1] = mapped[friend]
@@ -267,58 +256,58 @@ def draw_full_graph(adjacency: dict[int, set[int]], output: Path):
     ax.scatter(main_points[:, 0], main_points[:, 1], s=0.45, c="#1676A5", alpha=0.52, linewidths=0, rasterized=True)
     minor_points = np.array([mapped[user] for group in groups[1:] for user in group])
     ax.scatter(minor_points[:, 0], minor_points[:, 1], s=1.8, c="#D45B38", alpha=0.82, linewidths=0, rasterized=True)
-    ax.text(0.5, 0.013, f"Componente mayor: {len(main_group):,} usuarios · Otras {len(groups)-1} componentes: {len(adjacency)-len(main_group)} usuarios".replace(",", " "), ha="center", va="center", fontsize=10)
+    ax.text(0.5, 0.013, f"Componente mayor: {len(main_group):,} usuarios · Otras {len(groups)-1} componentes: {len(graph)-len(main_group)} usuarios".replace(",", " "), ha="center", va="center", fontsize=10)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
     fig.tight_layout(pad=0.15)
     fig.savefig(output, facecolor="white")
     plt.close(fig)
-    return {"tipo": "grafo de nodos y aristas", "nodos": len(adjacency), "aristas_dibujadas": edges, "layout": "Graphviz sfdp para la componente mayor; componentes menores dispuestas en dos filas", "sin_muestreo": True, "archivo_dot": dot.name}
+    return {"tipo": "grafo de nodos y aristas", "nodos": len(graph), "aristas_dibujadas": edges, "layout": "Graphviz sfdp para la componente mayor; componentes menores dispuestas en dos filas", "sin_muestreo": True, "archivo_dot": dot.name}
 
 
-def export_full_edge_list(adjacency: dict[int, set[int]], output: Path):
+def export_full_edge_list(graph: nx.Graph, output: Path):
     """Escribe el grafo íntegro en formato CSV comprimido para reproducirlo."""
     with gzip.open(output, "wt", encoding="ascii") as stream:
         stream.write("usuario_1,usuario_2\n")
-        for user in sorted(adjacency):
-            for friend in sorted(adjacency[user]):
+        for user in sorted(graph):
+            for friend in sorted(graph[user]):
                 if user < friend:
                     stream.write(f"{user},{friend}\n")
 
 
 def analyze(links: Path, wall: Path, output: Path, seed: int, figure_nodes: int):
     output.mkdir(parents=True, exist_ok=True)
-    adjacency, link_stats = load_friendships(links)
+    graph, link_stats = load_friendships(links)
     authors, wall_stats, wall_users = load_wall_posts(wall)
-    sizes = components(adjacency)
-    degrees = sorted(((len(friends), user) for user, friends in adjacency.items()), reverse=True)
-    full_figure = draw_full_graph(adjacency, output / "grafo_completo_facebook.png")
-    export_full_edge_list(adjacency, output / "aristas_amistad_completa.csv.gz")
-    figure = draw_subgraph(adjacency, authors, seed, output / "subgrafo_facebook.png", figure_nodes)
+    sizes = components(graph)
+    degrees = sorted(((graph.degree(user), user) for user in graph), reverse=True)
+    full_figure = draw_full_graph(graph, output / "grafo_completo_facebook.png")
+    export_full_edge_list(graph, output / "aristas_amistad_completa.csv.gz")
+    figure = draw_subgraph(graph, authors, seed, output / "subgrafo_facebook.png", figure_nodes)
     result = {
         "fuente": "MPI-SWS, Facebook New Orleans, WOSN 2009",
         "archivos": {links.name: sha256(links), wall.name: sha256(wall)},
         "amistades": {
             **link_stats,
-            "usuarios_nodos": len(adjacency),
+            "usuarios_nodos": len(graph),
             "componentes_conexas": len(sizes),
             "componente_mayor": sizes[0],
             "cinco_componentes_mayores": sizes[:5],
             "grado_maximo": degrees[0][0],
             "usuario_grado_maximo": degrees[0][1],
-            "usuarios_sin_aristas_en_archivo": sum(not friends for friends in adjacency.values()),
+            "usuarios_sin_aristas_en_archivo": sum(graph.degree(user) == 0 for user in graph),
             "observacion": "La lista de enlaces no enumera usuarios sin aparición en una arista.",
         },
-        "muro": {**wall_stats, "usuarios_muro_presentes_en_amistades": len(wall_users & adjacency.keys())},
-        "bfs": {"semilla": seed, "rondas": reach_by_hops(adjacency, seed)},
+        "muro": {**wall_stats, "usuarios_muro_presentes_en_amistades": len(wall_users & set(graph))},
+        "bfs": {"semilla": seed, "rondas": reach_by_hops(graph, seed)},
         "figura_completa": full_figure,
         "figura": figure,
         "limite_interpretacion": "No hay ID de publicación, contenido ni trazas de republicación: no se pueden reconstruir cadenas históricas de compartidos.",
     }
     destination = output / "estadisticas_facebook.json"
     destination.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"nodos": len(adjacency), "aristas": link_stats["aristas_amistad_no_dirigidas_unicas"], "publicaciones_muro": wall_stats["filas_publicaciones_muro"], "estadisticas": str(destination), "grafo_completo": str(output / "grafo_completo_facebook.png"), "subgrafo": str(output / "subgrafo_facebook.png")}, ensure_ascii=False))
+    print(json.dumps({"nodos": len(graph), "aristas": link_stats["aristas_amistad_no_dirigidas_unicas"], "publicaciones_muro": wall_stats["filas_publicaciones_muro"], "estadisticas": str(destination), "grafo_completo": str(output / "grafo_completo_facebook.png"), "subgrafo": str(output / "subgrafo_facebook.png")}, ensure_ascii=False))
     return result
 
 
