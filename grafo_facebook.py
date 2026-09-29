@@ -11,7 +11,6 @@ import argparse
 import gzip
 import hashlib
 import json
-import math
 import shutil
 import subprocess
 from collections import deque
@@ -163,107 +162,24 @@ def draw_subgraph(graph: nx.Graph, authors: set[int], seed: int, output: Path, l
 
 
 def draw_full_graph(graph: nx.Graph, output: Path):
-    """Dibuja cada nodo y cada amistad con Graphviz sfdp (sin muestreo)."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from matplotlib.collections import LineCollection
-
+    """Graphviz dibuja el grafo completo a partir de sus nodos y aristas."""
     executable = shutil.which("sfdp")
     if executable is None:
         raise RuntimeError("Se requiere Graphviz sfdp para dibujar el grafo completo")
     dot = output.with_suffix(".dot")
-    edges = 0
     with dot.open("w", encoding="ascii") as stream:
         stream.write('graph Facebook {\n  graph [layout=sfdp, overlap=true, outputorder=edgesfirst, bgcolor="white", dpi=160, size="12,8!", margin=0.02, start=7];\n')
         stream.write('  node [shape=point, width=0.012, label="", color="#1376A9D8"];\n')
-        stream.write('  edge [color="#31536D0A", penwidth=0.12];\n')
+        stream.write('  edge [color="#31536D80", penwidth=0.3];\n')
         for user in sorted(graph):
             stream.write(f"  {user};\n")
         for user in sorted(graph):
             for friend in sorted(graph[user]):
                 if user < friend:
                     stream.write(f"  {user} -- {friend};\n")
-                    edges += 1
         stream.write("}\n")
-    plain = output.with_suffix(".plain")
-    try:
-        with plain.open("w", encoding="ascii") as stream:
-            subprocess.run([executable, "-Tplain", str(dot)], stdout=stream, check=True, timeout=300)
-        positions = {}
-        with plain.open("r", encoding="ascii") as stream:
-            for line in stream:
-                if line.startswith("node "):
-                    parts = line.split()
-                    positions[int(parts[1])] = (float(parts[2]), float(parts[3]))
-    finally:
-        plain.unlink(missing_ok=True)
-    if len(positions) != len(graph):
-        raise RuntimeError(f"sfdp devolvió {len(positions)} posiciones para {len(graph)} nodos")
-
-    # La componente principal ocupa casi toda la figura. Las demás se ordenan
-    # en dos filas, manteniendo todos sus nodos y relaciones dentro del dibujo.
-    unseen = set(graph)
-    groups = []
-    while unseen:
-        start = min(unseen)
-        unseen.remove(start)
-        queue = deque([start])
-        group = []
-        while queue:
-            user = queue.popleft()
-            group.append(user)
-            for friend in graph[user]:
-                if friend in unseen:
-                    unseen.remove(friend)
-                    queue.append(friend)
-        groups.append(group)
-    groups.sort(key=lambda group: (-len(group), min(group)))
-    main_group = groups[0]
-    xs = np.array([positions[user][0] for user in main_group])
-    ys = np.array([positions[user][1] for user in main_group])
-    x_min, x_max = float(xs.min()), float(xs.max())
-    y_min, y_max = float(ys.min()), float(ys.max())
-    mapped = {}
-    for user in main_group:
-        x, y = positions[user]
-        mapped[user] = (0.04 + (x - x_min) / max(1, x_max - x_min) * 0.92,
-                        0.19 + (y - y_min) / max(1, y_max - y_min) * 0.76)
-    for index, group in enumerate(groups[1:]):
-        column, row = index % 72, index // 72
-        center_x = 0.012 + column * (0.976 / 71)
-        center_y = 0.055 + row * 0.055
-        for offset, user in enumerate(sorted(group)):
-            angle = 2 * math.pi * offset / max(1, len(group))
-            mapped[user] = (center_x + 0.0038 * math.cos(angle), center_y + 0.0048 * math.sin(angle))
-
-    segments = np.empty((edges, 2, 2), dtype=np.float32)
-    index = 0
-    for user in sorted(graph):
-        for friend in sorted(graph[user]):
-            if user < friend:
-                segments[index, 0] = mapped[user]
-                segments[index, 1] = mapped[friend]
-                index += 1
-    if index != edges:
-        raise RuntimeError("El número de aristas dibujadas no coincide")
-    fig, ax = plt.subplots(figsize=(12, 8), dpi=180)
-    fig.patch.set_facecolor("white")
-    ax.add_collection(LineCollection(segments, colors=[(0.10, 0.26, 0.40, 0.022)], linewidths=0.10, rasterized=True))
-    main_points = np.array([mapped[user] for user in main_group])
-    ax.scatter(main_points[:, 0], main_points[:, 1], s=0.45, c="#1676A5", alpha=0.52, linewidths=0, rasterized=True)
-    minor_points = np.array([mapped[user] for group in groups[1:] for user in group])
-    ax.scatter(minor_points[:, 0], minor_points[:, 1], s=1.8, c="#D45B38", alpha=0.82, linewidths=0, rasterized=True)
-    ax.text(0.5, 0.013, f"Componente mayor: {len(main_group):,} usuarios · Otras {len(groups)-1} componentes: {len(graph)-len(main_group)} usuarios".replace(",", " "), ha="center", va="center", fontsize=10)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    fig.tight_layout(pad=0.15)
-    fig.savefig(output, facecolor="white")
-    plt.close(fig)
-    return {"tipo": "grafo de nodos y aristas", "nodos": len(graph), "aristas_dibujadas": edges, "layout": "Graphviz sfdp para la componente mayor; componentes menores dispuestas en dos filas", "sin_muestreo": True, "archivo_dot": dot.name}
+    subprocess.run([executable, "-Tpng", str(dot), "-o", str(output)], check=True, timeout=300)
+    return {"tipo": "grafo de nodos y aristas", "nodos": len(graph), "aristas_dibujadas": graph.number_of_edges(), "layout": "Graphviz sfdp", "sin_muestreo": True, "archivo_dot": dot.name}
 
 
 def export_full_edge_list(graph: nx.Graph, output: Path):

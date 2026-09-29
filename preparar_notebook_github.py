@@ -31,7 +31,7 @@ notebook = {
 
 Este cuaderno usa el conjunto [WOSN 2009 de MPI-SWS](https://socialnetworks.mpi-sws.org/data-wosn2009.html). La construcción de las amistades como grafo no dirigido se resume en una llamada a `nx.read_edgelist`. Los datos originales se descargan y comprueban con SHA-256.
 
-La BFS para componentes y alcance está implementada en Python en [grafo_facebook.py](https://github.com/outspark-app/outspark-facebook-grafo/blob/main/grafo_facebook.py). Ese archivo también genera la figura de los 63 731 nodos y las 817 090 aristas, más un subgrafo legible. El cuaderno comprueba que está ejecutando exactamente la versión del archivo con la que se publicó. Las figuras guardadas proceden de una ejecución verificada y pueden regenerarse. Una amistad no demuestra que una publicación haya circulado entre usuarios.
+La BFS para componentes y alcance está implementada en Python en [grafo_facebook.py](https://github.com/outspark-app/outspark-facebook-grafo/blob/main/grafo_facebook.py). Graphviz dibuja directamente los 63 731 nodos y las 817 090 aristas; el mismo archivo genera un subgrafo legible. El cuaderno comprueba que está ejecutando exactamente la versión del archivo con la que se publicó. Las figuras guardadas proceden de una ejecución verificada y pueden regenerarse. Una amistad no demuestra que una publicación haya circulado entre usuarios.
 """),
         code("descarga-datos", """from pathlib import Path
 from urllib.request import urlopen
