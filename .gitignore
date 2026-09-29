@@ -1,0 +1,7 @@
+*.gz
+resultados/
+__pycache__/
+.DS_Store
+Outspark_grafo_Facebook.ipynb
+Outspark_grafo_Facebook_Colab.ipynb
+Outspark_grafo_Facebook_output.ipynb
