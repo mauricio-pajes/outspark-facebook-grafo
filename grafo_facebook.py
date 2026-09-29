@@ -13,6 +13,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tempfile
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -162,27 +163,92 @@ def draw_subgraph(graph: nx.Graph, authors: set[int], seed: int, output: Path, l
 
 
 def draw_full_graph(graph: nx.Graph, output: Path):
-    """Graphviz dibuja el grafo completo a partir de sus nodos y aristas."""
-    executable = shutil.which("sfdp")
-    if executable is None:
-        raise RuntimeError("Se requiere Graphviz sfdp para dibujar el grafo completo")
-    main_component = max(nx.connected_components(graph), key=len)
+    """Dibuja el grafo íntegro y compacta visualmente sus componentes menores."""
+    sfdp, neato = shutil.which("sfdp"), shutil.which("neato")
+    if sfdp is None or neato is None:
+        raise RuntimeError("Se requieren Graphviz sfdp y neato para dibujar el grafo completo")
+    components = sorted(nx.connected_components(graph), key=lambda c: (-len(c), min(c)))
+    main_component = components[0]
     dot = output.with_suffix(".dot")
     with dot.open("w", encoding="ascii") as stream:
         stream.write('graph Facebook {\n  graph [layout=sfdp, overlap=true, outputorder=edgesfirst, bgcolor="white", dpi=160, size="12,8!", margin=0.02, start=7];\n')
-        stream.write('  node [shape=point, width=0.012, label="", color="#B94D2DE8"];\n')
-        stream.write('  edge [color="#B94D2D1C", penwidth=0.18];\n')
+        stream.write('  node [shape=point, width=0.012, label=""];\n')
         for user in sorted(graph):
-            style = '' if user in main_component else ' [color="#9AAAB7B0"]'
-            stream.write(f"  {user}{style};\n")
+            stream.write(f"  {user};\n")
         for user in sorted(graph):
             for friend in sorted(graph[user]):
                 if user < friend:
-                    style = '' if user in main_component else ' [color="#AAB5BE88", penwidth=0.18]'
-                    stream.write(f"  {user} -- {friend}{style};\n")
+                    stream.write(f"  {user} -- {friend};\n")
         stream.write("}\n")
-    subprocess.run([executable, "-Tpng", str(dot), "-o", str(output)], check=True, timeout=600)
-    return {"tipo": "grafo de nodos y aristas", "nodos": len(graph), "aristas_dibujadas": graph.number_of_edges(), "layout": "Graphviz sfdp", "sin_muestreo": True, "componente_resaltada_nodos": len(main_component), "archivo_dot": dot.name}
+
+    with tempfile.TemporaryDirectory() as temporary:
+        layout = Path(temporary) / "posiciones.plain"
+        subprocess.run([sfdp, "-Tplain", str(dot), "-o", str(layout)], check=True, timeout=900)
+        source = {}
+        with layout.open(encoding="ascii") as stream:
+            for line in stream:
+                if line.startswith("node "):
+                    fields = line.split()
+                    source[int(fields[1])] = (float(fields[2]), float(fields[3]))
+                elif line.startswith("edge "):
+                    break
+        if len(source) != graph.number_of_nodes():
+            raise ValueError("Graphviz no devolvió una posición para cada usuario")
+
+        positions = {}
+        xs = [source[user][0] for user in main_component]
+        ys = [source[user][1] for user in main_component]
+        center_x, center_y = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+        scale = min(1.28 / (max(xs) - min(xs)), 1.28 / (max(ys) - min(ys)))
+        for user in main_component:
+            x, y = source[user]
+            positions[user] = ((x - center_x) * scale, (y - center_y) * scale)
+
+        columns, rows = 20, 20
+        slots = [(column, row) for row in range(rows) for column in range(columns)
+                 if not (3 <= column < 17 and 3 <= row < 17)]
+        if len(slots) < len(components) - 1:
+            raise ValueError("No hay espacios suficientes para las componentes menores")
+        for index, component in enumerate(components[1:]):
+            slot = round(index * (len(slots) - 1) / max(1, len(components) - 2))
+            column, row = slots[slot]
+            anchor_x = -1 + (column + 0.5) * 2 / columns
+            anchor_y = 1 - (row + 0.5) * 2 / rows
+            if abs(anchor_x) >= 0.75:
+                anchor_x *= 0.90
+            if abs(anchor_y) >= 0.75:
+                anchor_y *= 0.90
+            xs = [source[user][0] for user in component]
+            ys = [source[user][1] for user in component]
+            center_x, center_y = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+            span_x, span_y = max(xs) - min(xs), max(ys) - min(ys)
+            factors = []
+            if span_x:
+                factors.append((2 / columns * 0.43) / span_x)
+            if span_y:
+                factors.append((2 / rows * 0.43) / span_y)
+            scale = min(factors) if factors else 0
+            for user in component:
+                x, y = source[user]
+                positions[user] = (anchor_x + (x - center_x) * scale,
+                                   anchor_y + (y - center_y) * scale)
+
+        compact = Path(temporary) / "grafo_compacto.dot"
+        with compact.open("w", encoding="ascii") as stream:
+            stream.write('graph Facebook {\n  graph [layout=neato, overlap=true, outputorder=edgesfirst, bgcolor="white", dpi=160, size="10,10!", margin=0.02, splines=line];\n')
+            stream.write('  node [shape=point, width=0.012, label="", color="#1376A9D8"];\n')
+            stream.write('  edge [color="#31536D1C", penwidth=0.18];\n')
+            for user in sorted(graph):
+                x, y = positions[user]
+                color = '' if user in main_component else ', color="#758B9AB8"'
+                stream.write(f'  {user} [pos="{(x + 1) * 360:.4f},{(y + 1) * 360:.4f}!"{color}];\n')
+            for user, friend in graph.edges:
+                style = '' if user in main_component else ' [color="#8DA0AE9A", penwidth=0.22]'
+                stream.write(f"  {user} -- {friend}{style};\n")
+            stream.write("}\n")
+        subprocess.run([neato, "-n2", "-Tpng", str(compact), "-o", str(output)], check=True, timeout=900)
+
+    return {"tipo": "grafo de nodos y aristas", "nodos": len(graph), "aristas_dibujadas": graph.number_of_edges(), "layout": "Graphviz sfdp con componentes menores compactadas; neato -n2", "sin_muestreo": True, "componente_resaltada_nodos": len(main_component), "componentes_menores_compactadas": len(components) - 1, "archivo_dot": dot.name}
 
 
 def export_full_edge_list(graph: nx.Graph, output: Path):
