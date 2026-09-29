@@ -166,20 +166,23 @@ def draw_full_graph(graph: nx.Graph, output: Path):
     executable = shutil.which("sfdp")
     if executable is None:
         raise RuntimeError("Se requiere Graphviz sfdp para dibujar el grafo completo")
+    main_component = max(nx.connected_components(graph), key=len)
     dot = output.with_suffix(".dot")
     with dot.open("w", encoding="ascii") as stream:
         stream.write('graph Facebook {\n  graph [layout=sfdp, overlap=true, outputorder=edgesfirst, bgcolor="white", dpi=160, size="12,8!", margin=0.02, start=7];\n')
-        stream.write('  node [shape=point, width=0.012, label="", color="#1376A9D8"];\n')
-        stream.write('  edge [color="#31536D80", penwidth=0.3];\n')
+        stream.write('  node [shape=point, width=0.012, label="", color="#B94D2DE8"];\n')
+        stream.write('  edge [color="#B94D2D1C", penwidth=0.18];\n')
         for user in sorted(graph):
-            stream.write(f"  {user};\n")
+            style = '' if user in main_component else ' [color="#9AAAB7B0"]'
+            stream.write(f"  {user}{style};\n")
         for user in sorted(graph):
             for friend in sorted(graph[user]):
                 if user < friend:
-                    stream.write(f"  {user} -- {friend};\n")
+                    style = '' if user in main_component else ' [color="#AAB5BE88", penwidth=0.18]'
+                    stream.write(f"  {user} -- {friend}{style};\n")
         stream.write("}\n")
-    subprocess.run([executable, "-Tpng", str(dot), "-o", str(output)], check=True, timeout=300)
-    return {"tipo": "grafo de nodos y aristas", "nodos": len(graph), "aristas_dibujadas": graph.number_of_edges(), "layout": "Graphviz sfdp", "sin_muestreo": True, "archivo_dot": dot.name}
+    subprocess.run([executable, "-Tpng", str(dot), "-o", str(output)], check=True, timeout=600)
+    return {"tipo": "grafo de nodos y aristas", "nodos": len(graph), "aristas_dibujadas": graph.number_of_edges(), "layout": "Graphviz sfdp", "sin_muestreo": True, "componente_resaltada_nodos": len(main_component), "archivo_dot": dot.name}
 
 
 def export_full_edge_list(graph: nx.Graph, output: Path):
